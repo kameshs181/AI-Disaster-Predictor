@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>AI Disaster Predictor — Dashboard</title>
+
+  <!-- Tailwind-ish minimal CDN for quick, nice styling -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css">
+
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Axios for HTTP -->
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    /* ---------- Page styling ---------- */
+    body {
+      background: linear-gradient(to bottom right, #0f172a, #0ea5e9 60%);
+      color: #ffffff;
+      min-height: 100vh;
+      font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    }
+    header { background: linear-gradient(90deg,#0ea5e9,#0284c7); padding: 18px; box-shadow: 0 6px 18px rgba(0,0,0,0.25); }
+    header h1 { font-weight: 700; font-size: 1.35rem; color: #042a2b; }
+
+    .card {
+      background: rgba(255,255,255,0.06);
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 6px 18px rgba(2,6,23,0.35);
+    }
+
+    .pulse-marker {
+      width: 22px; height: 22px; border-radius: 50%;
+      box-shadow: 0 0 18px var(--pulse-color, #ff4d4f);
+      background: var(--pulse-color, #ff4d4f);
+      animation: pulse 2s infinite ease-out;
+      border: 2px solid rgba(255,255,255,0.9);
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); opacity: 1; }
+      50% { transform: scale(1.8); opacity: 0.5; }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    /* storm glow */
+    .storm-glow { box-shadow: 0 0 30px 8px rgba(255,255,255,0.8); animation: glowPulse 1.5s infinite; }
+    @keyframes glowPulse {
+      0% { transform: scale(1); opacity:1; } 50% { transform: scale(1.25); opacity:0.6; } 100% { transform: scale(1); opacity:1; }
+    }
+
+    /* map legend control tweaks */
+    .leaflet-control-layers-expanded { background: rgba(2,6,23,0.8); color: white; border-radius: 8px; padding: 8px; }
+    .leaflet-control-layers-list label { color: #f8fafc; }
+
+    /* Chart container style */
+    #riskChart { background: rgba(255,255,255,0.04); border-radius: 10px; padding: 6px; }
+
+    /* small responsive tweaks */
+    @media (max-width: 768px) {
+      .grid-cols-3-md { grid-template-columns: repeat(1, minmax(0,1fr)); }
+    }
+  </style>
+</head>
+<body>
+  <header class="flex items-center justify-between px-6">
+    <div>
+      <h1 class="text-2xl text-white">AI Disaster Predictor Dashboard</h1>
+      <p class="text-sm text-white/80 mt-1">Live flood & cyclone monitoring • Animated map & radar overlays</p>
+    </div>
+    <div class="text-right">
+      <div class="text-sm text-white/90">Welcome, {{ user or "Guest" }}</div>
+      <a href="/logout" class="text-xs text-white/70 hover:text-white">Logout</a>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-8">
+    <!-- input row -->
+    <section class="flex flex-col md:flex-row items-center gap-4 mb-6">
+      <input id="cityInput" class="flex-1 p-3 rounded-md text-black" placeholder="Enter city name (e.g. Chennai)" />
+      <div class="flex items-center gap-3">
+        <button id="predictBtn" class="px-4 py-2 bg-gradient-to-r from-cyan-400 to-blue-600 rounded-md font-semibold shadow-lg" onclick="onPredict()">Predict</button>
+        <button id="clearMapBtn" class="px-3 py-2 bg-white/10 rounded-md text-white hover:bg-white/20" onclick="clearMap()">Clear</button>
+      </div>
+    </section>
+
+    <!-- top panel: weather + risk cards -->
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+      <!-- live weather -->
+      <div id="weatherPanel" class="card hidden">
+        <h3 class="text-lg font-bold mb-2">🌤️ Live Weather</h3>
+        <div id="weatherInfo" class="grid grid-cols-2 gap-2 text-sm text-white/85">
+          <!-- injected -->
+        </div>
+      </div>
+
+      <!-- flood card -->
+      <div id="floodCard" class="card text-center">
+        <h3 class="text-lg font-semibold">🌊 Flood Risk</h3>
+        <div id="floodProb" class="text-2xl font-bold mt-3">-</div>
+        <div id="floodRisk" class="text-sm mt-2 text-white/80">-</div>
+      </div>
+
+      <!-- cyclone card -->
+      <div id="cycloneCard" class="card text-center">
+        <h3 class="text-lg font-semibold">🌪️ Cyclone Risk</h3>
+        <div id="cycloneProb" class="text-2xl font-bold mt-3">-</div>
+        <div id="cycloneRisk" class="text-sm mt-2 text-white/80">-</div>
+      </div>
+    </section>
+
+    <!-- map row -->
+    <section class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div class="card">
+        <h3 class="font-semibold mb-2">🗺️ Live Map (toggle weather overlays)</h3>
+        <div id="map" style="height:520px; border-radius:10px;"></div>
+      </div>
+
+      <div class="space-y-6">
+        <div class="card">
+          <h3 class="font-semibold mb-2">📘 Risk Details & Safety Tips</h3>
+          <div id="riskDetails" class="text-sm text-white/90 space-y-3">
+            <div id="floodDetail">No data yet</div>
+            <div id="cycloneDetail">No data yet</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 class="font-semibold mb-2">📈 Recent Risk Trends</h3>
+          <canvas id="riskChart" height="280"></canvas>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ================= JS: Map, Animations, API calls ================= -->
+  <script>
+    // ---------- config ----------
+    const PULSE_COLORS = { low: "#34D399", medium: "#F97316", high: "#EF4444" };
+    const OPENWEATHER_KEY = "{{ openweather_api_key }}"; // injected by Flask render_template
+    const PREDICT_ENDPOINT = "/predict";
+    const RECENT_ENDPOINT = "/recent_predictions";
+
+    // ---------- map globals ----------
+    let map, currentMarker, pulseLayer, cyclonePathLayer, stormMarker;
+    let riskChart = null;
+
+    // ---------- init base map and tile layers ----------
+    function initMap() {
+      // Base OSM tile
+      const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19 });
+
+      // OpenWeatherMap tile layers (use your API key injected above)
+      // NOTE: if your key is not visible, ensure app passes openweather_api_key when rendering dashboard.
+      const clouds = L.tileLayer(`https://tile.openweathermap.org/map/clouds_new/{z}/{x}/{y}.png?appid=${OPENWEATHER_KEY}`, { opacity: 0.6, attribution: "© OpenWeatherMap" });
+      const precip = L.tileLayer(`https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${OPENWEATHER_KEY}`, { opacity: 0.6, attribution: "© OpenWeatherMap" });
+      const temp = L.tileLayer(`https://tile.openweathermap.org/map/temp_new/{z}/{x}/{y}.png?appid=${OPENWEATHER_KEY}`, { opacity: 0.5, attribution: "© OpenWeatherMap" });
+      const wind = L.tileLayer(`https://tile.openweathermap.org/map/wind_new/{z}/{x}/{y}.png?appid=${OPENWEATHER_KEY}`, { opacity: 0.6, attribution: "© OpenWeatherMap" });
+
+      // Layer objects
+      const baseLayers = { "OpenStreetMap": osm };
+      const overlayLayers = { "☁️ Clouds": clouds, "🌧️ Precipitation": precip, "🌡️ Temperature": temp, "💨 Wind": wind };
+
+      // initialize map
+      map = L.map("map", { center: [20.5937, 78.9629], zoom: 5, layers: [osm] });
+
+      // add controls
+      L.control.layers(baseLayers, overlayLayers, { collapsed: false }).addTo(map);
+
+      // legend (small)
+      const legend = L.control({position: 'bottomright'});
+      legend.onAdd = () => {
+        const div = L.DomUtil.create('div','card text-xs p-2 bg-white/5 rounded');
+        div.innerHTML = `<div class="text-white/90 text-sm">
+          <strong>Legend</strong><br>
+          <span style="display:inline-block;width:12px;height:12px;background:#34D399;margin-right:6px;"></span> Low<br>
+          <span style="display:inline-block;width:12px;height:12px;background:#F97316;margin-right:6px;"></span> Medium<br>
+          <span style="display:inline-block;width:12px;height:12px;background:#EF4444;margin-right:6px;"></span> High
+        </div>`;
+        return div;
+      };
+      legend.addTo(map);
+    }
+
+    // create pulsing div icon
+    function makePulseIcon(color) {
+      return L.divIcon({
+        className: '',
+        html: `<div style="--pulse-color:${color}" class="pulse-marker"></div>`,
+        iconSize: [28,28],
+        iconAnchor: [14,14]
+      });
+    }
+
+    // animate ripple circle (growing/shrinking)
+    function startRipple(circle) {
+      let r = Math.max(circle.getRadius(), 15000);
+      let growing = true;
+      const timer = setInterval(() => {
+        if (!circle._map) { clearInterval(timer); return; } // removed
+        r = growing ? r + 3000 : r - 3000;
+        if (r > 90000) growing = false;
+        if (r < 12000) growing = true;
+        circle.setRadius(r);
+      }, 150);
+      return timer;
+    }
+
+    // show cyclone path animation
+    function showCyclonePath(lat, lon, risk) {
+      if (cyclonePathLayer) { map.removeLayer(cyclonePathLayer); cyclonePathLayer = null; }
+      if (stormMarker) { map.removeLayer(stormMarker); stormMarker = null; }
+
+      const color = (risk === "High") ? PULSE_COLORS.high : (risk === "Medium") ? PULSE_COLORS.medium : PULSE_COLORS.low;
+
+      // create a faux path (curve) — you can replace with real track if you have it
+      const pts = [
+        [lat - 2.6, lon - 4.2],
+        [lat - 1.6, lon - 2.8],
+        [lat - 0.8, lon - 1.2],
+        [lat, lon],
+        [lat + 0.8, lon + 1.8],
+      ];
+
+      cyclonePathLayer = L.polyline(pts, { color, weight: 3, opacity: 0.7, dashArray: '8,8' }).addTo(map);
+
+      // animate dash offset
+      let offset = 0;
+      const dashTimer = setInterval(() => {
+        if (!cyclonePathLayer) { clearInterval(dashTimer); return; }
+        offset = (offset + 1) % 16;
+        cyclonePathLayer.setStyle({ dashOffset: offset });
+      }, 90);
+
+      // moving storm center marker
+      let idx = 0;
+      stormMarker = L.circleMarker(pts[0], { radius: 10, color: color, fillColor: color, fillOpacity: 0.9, className: 'storm-glow' }).addTo(map);
+      const moveTimer = setInterval(() => {
+        if (!stormMarker) { clearInterval(moveTimer); return; }
+        stormMarker.setLatLng(pts[idx]);
+        idx = (idx + 1) % pts.length;
+      }, 1100);
+    }
+
+    // clear map overlays/markers
+    function clearMap() {
+      if (currentMarker) { map.removeLayer(currentMarker); currentMarker = null; }
+      if (pulseLayer) { map.removeLayer(pulseLayer); pulseLayer = null; }
+      if (cyclonePathLayer) { map.removeLayer(cyclonePathLayer); cyclonePathLayer = null; }
+      if (stormMarker) { map.removeLayer(stormMarker); stormMarker = null; }
+    }
+
+    // animate map to new location and add animated markers
+    function animateTo(lat, lon, flood_prob, cyclone_prob, city, weather) {
+      // decide combined severity
+      const severity = (flood_prob >= 0.7 || cyclone_prob >= 0.7) ? "high" :
+                       (flood_prob >= 0.4 || cyclone_prob >= 0.4) ? "medium" : "low";
+      const color = PULSE_COLORS[severity];
+
+      // smooth fly
+      map.flyTo([lat, lon], 6, { duration: 2.4 });
+
+      // remove prior
+      if (currentMarker) map.removeLayer(currentMarker);
+      if (pulseLayer) map.removeLayer(pulseLayer);
+
+      // add pulsing marker
+      currentMarker = L.marker([lat, lon], { icon: makePulseIcon(color) }).addTo(map)
+        .bindPopup(`<b>${city}</b><br>Flood: ${(flood_prob*100).toFixed(1)}% (${riskText(flood_prob)})<br>Cyclone: ${(cyclone_prob*100).toFixed(1)}% (${riskText(cyclone_prob)})`)
+        .openPopup();
+
+      // add big semi-transparent circle (pulse ripple)
+      pulseLayer = L.circle([lat, lon], { color, fillColor: color, fillOpacity: 0.14, radius: Math.max(20000, (Math.max(flood_prob, cyclone_prob)*60000)) }).addTo(map);
+      // animate ripple radius
+      startRipple(pulseLayer);
+
+      // show cyclone path if cyclone_prob >= medium
+      if (cyclone_prob >= 0.4) showCyclonePath(lat, lon, riskText(cyclone_prob));
+    }
+
+    function riskText(prob) {
+      if (prob < 0.4) return "Low";
+      if (prob < 0.7) return "Medium";
+      return "High";
+    }
+
+    // ---------- fetch prediction from Flask backend ----------
+    async function onPredict() {
+      const city = document.getElementById("cityInput").value.trim();
+      if (!city) { alert("Enter a city"); return; }
+
+      // disable button while loading
+      const btn = document.getElementById("predictBtn");
+      btn.disabled = true;
+      btn.innerText = "Predicting...";
+
+      try {
+        const res = await axios.post(PREDICT_ENDPOINT, { city });
+        const data = res.data;
+        if (data.error) {
+          alert(data.error || "Prediction error");
+          return;
+        }
+
+        // show weather panel
+        document.getElementById("weatherPanel").classList.remove("hidden");
+        document.getElementById("weatherInfo").innerHTML = `
+          <div><strong>Temp:</strong> ${data.weather.temp} °C</div>
+          <div><strong>Humidity:</strong> ${data.weather.humidity}%</div>
+          <div><strong>Pressure:</strong> ${data.weather.pressure} hPa</div>
+          <div><strong>Rainfall:</strong> ${data.weather.rainfall} mm</div>
+          <div><strong>Lat:</strong> ${data.weather.lat.toFixed(4)}</div>
+          <div><strong>Lon:</strong> ${data.weather.lon.toFixed(4)}</div>
+        `;
+
+        // update risk cards
+        const floodP = data.flood_prob;
+        const cycloneP = data.cyclone_prob;
+        document.getElementById("floodProb").innerText = (floodP*100).toFixed(1) + "%";
+        document.getElementById("floodRisk").innerText = data.flood_risk;
+        document.getElementById("cycloneProb").innerText = (cycloneP*100).toFixed(1) + "%";
+        document.getElementById("cycloneRisk").innerText = data.cyclone_risk;
+
+        // details
+        document.getElementById("floodDetail").innerHTML = `<b>Flood</b><br>
+          Rainfall: ${data.weather.rainfall} mm<br>
+          Temp: ${data.weather.temp} °C<br>
+          Advice: ${data.flood_risk === 'High' ? 'Evacuate if instructed, move to higher ground.' : (data.flood_risk === 'Medium' ? 'Be cautious in low-lying areas.' : 'Low immediate risk; stay informed.')}`;
+        document.getElementById("cycloneDetail").innerHTML = `<b>Cyclone</b><br>
+          Pressure: ${data.weather.pressure} hPa<br>
+          Advice: ${data.cyclone_risk === 'High' ? 'Follow official shelter orders and avoid travel.' : (data.cyclone_risk === 'Medium' ? 'Secure outdoor items and stay updated.' : 'Low immediate risk; monitor forecasts.')}`;
+
+        // animate map and marker
+        animateTo(data.weather.lat, data.weather.lon, floodP, cycloneP, data.city, data.weather);
+
+        // refresh chart
+        await updateChart();
+
+      } catch (err) {
+        console.error(err);
+        alert("Failed to predict. Check server logs.");
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "Predict";
+      }
+    }
+
+    // ---------- Chart (recent predictions) ----------
+    async function updateChart() {
+      try {
+        const res = await axios.get(RECENT_ENDPOINT);
+        const rows = res.data || [];
+        const labels = rows.map(r => r.city + " #" + r.id).reverse();
+        const flood = rows.map(r => r.flood_prob).reverse();
+        const cyclone = rows.map(r => r.cyclone_prob).reverse();
+
+        const ctx = document.getElementById('riskChart').getContext('2d');
+        if (riskChart) riskChart.destroy();
+        riskChart = new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [
+              { label: 'Flood', data: flood, borderColor: '#60a5fa', backgroundColor: 'rgba(96,165,250,0.15)', fill: true, tension: 0.3 },
+              { label: 'Cyclone', data: cyclone, borderColor: '#fb7185', backgroundColor: 'rgba(251,113,133,0.15)', fill: true, tension: 0.3 }
+            ]
+          },
+          options: {
+            responsive: true,
+            scales: { y: { beginAtZero: true, max: 1 } },
+            plugins: { legend: { position: 'top' } }
+          }
+        });
+      } catch (err) { console.error("chart update failed", err); }
+    }
+
+    // ---------- initialize everything ----------
+    (function() {
+      initMap();
+      updateChart();
+    })();
+  </script>
+</body>
+</html>

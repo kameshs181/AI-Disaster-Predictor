@@ -1,0 +1,7 @@
+body { font-family: Arial; background:#f0f8ff; text-align:center; }
+h1 { color:#333; }
+input { padding:10px; margin:10px; width:200px; }
+button { padding:10px; cursor:pointer; transition:0.3s; }
+button:hover { transform:scale(1.05); background:#ff4500; color:#fff; }
+.alert-box { margin:20px auto; font-size:18px; animation:fadeIn 1s; }
+@keyframes fadeIn { 0%{opacity:0;}100%{opacity:1;} }

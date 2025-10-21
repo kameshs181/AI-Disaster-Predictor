@@ -1,0 +1,10 @@
+Flask
+flask-bcrypt
+flask-login
+pandas
+scikit-learn
+joblib
+geopy
+requests
+python-dotenv
+gunicorn
